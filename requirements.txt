@@ -1,0 +1,11 @@
+sentence-transformers
+faiss-cpu
+openai
+langchain
+tiktoken
+fastapi
+uvicorn
+pydantic
+python-multipart
+python-dotenv
+
