@@ -542,7 +542,7 @@ class ChatServiceAPI:
 
 # Set up Streamlit page config
 st.set_page_config(
-    page_title="Property Finder AI",
+    page_title="Property Finder",
     page_icon="🏠",
     layout="wide"
 )
@@ -560,7 +560,7 @@ def main():
     # Set up the sidebar
     with st.sidebar:
         st.image("https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcTSV3sgOOUPmJJIdhigpHfBTYIwRpLh5rdBVA&s",width=100)
-        st.title("Property Finder AI")
+        st.title("Property Finder")
         
         st.markdown("---")
         # Add logo to the sidebar
@@ -572,7 +572,8 @@ def main():
             st.rerun()
     
     # Main chat area
-    st.title("Property Finder AI Assistant")
+    st.title("Property Finder AI Community Assistant")
+    st.subheader("Not sure where to live yet in the city? Explore more details on all the different communities...")
     
     
     
