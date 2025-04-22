@@ -559,19 +559,14 @@ def main():
     
     # Set up the sidebar
     with st.sidebar:
-        st.title("Property Finder")
-        
-        st.markdown("---")
-        # Add logo to the sidebar
-        
-        
+            
         if st.button("New Chat"):
             st.session_state.session_id = st.session_state.chat_service.create_new_session()
             st.session_state.streamlit_messages = []
             st.rerun()
     
     # Main chat area
-    st.title("Property Finder AI Community Assistant")
+    st.title("UAE Real Estate Community Assistant")
     st.subheader("Not sure where to live yet in the city? Explore more details on all the different communities...")
     
     
