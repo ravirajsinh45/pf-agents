@@ -1,13 +1,10 @@
 import os
 import pickle
-import faiss
 import numpy as np
 import hashlib
 from uuid import uuid4
-import uvicorn
+import streamlit as st
 from typing import Dict, List, Optional, Any, Set
-from fastapi import FastAPI, UploadFile, File
-from pydantic import BaseModel
 from datetime import datetime, timedelta
 from pymongo import MongoClient
 from pymongo.collection import Collection
@@ -53,7 +50,8 @@ class Config:
     knowledgeable tone as a leading property portal in the UAE.
     Use context provided to answer the user's question.
     Do not answer any questions outside of the context provided.
-    If you do not know the answer, say "I don't know."
+    If you do not know the answer, say refuse to answer in polite manner.
+    If the question is out of context or not related UAE communities, say "I am not sure about that" or "I don't know".
     Use history of the conversation to provide a more personalized response."""
     
     STANDALONE_QUESTION_SYSTEM_PROMPT = """Given a chat history and the latest user question, 
@@ -191,8 +189,18 @@ class VectorStoreManager:
             return FAISS.load_local(Config.INDEX_PATH, self.embeddings, allow_dangerous_deserialization=True)
         else:
             print("🔄 Building new vector index...")
+            # Create data directory if it doesn't exist
+            if not os.path.exists(Config.TXT_FOLDER):
+                os.makedirs(Config.TXT_FOLDER)
+                print(f"Created folder: {Config.TXT_FOLDER}")
+                
             documents = self.document_loader.load_text_files(Config.TXT_FOLDER, process_all=True)
-            vectorstore = FAISS.from_documents(documents, self.embeddings)
+            if not documents:
+                # Create an empty vector store if no documents found
+                vectorstore = FAISS.from_texts(["Empty placeholder document"], self.embeddings)
+            else:
+                vectorstore = FAISS.from_documents(documents, self.embeddings)
+            
             vectorstore.save_local(Config.INDEX_PATH)
             print(f"✅ Built and saved vector store with {len(documents)} chunks.")
             return vectorstore
@@ -235,20 +243,31 @@ class DatabaseManager:
     
     def __init__(self):
         """Initialize database connection and collections"""
-        self.client = MongoClient(Config.MONGODB_CONNECTION_STRING)
-        self.db = self.client[Config.DB_NAME]
-        self.chat_collection = self.db[Config.CHAT_HISTORY_COLLECTION]
-        self.doc_registry_collection = self.db[Config.DOCUMENT_REGISTRY_COLLECTION]
-        self._create_indexes()
+        try:
+            self.client = MongoClient(Config.MONGODB_CONNECTION_STRING)
+            self.db = self.client[Config.DB_NAME]
+            self.chat_collection = self.db[Config.CHAT_HISTORY_COLLECTION]
+            self.doc_registry_collection = self.db[Config.DOCUMENT_REGISTRY_COLLECTION]
+            self._create_indexes()
+            self.mongo_available = True
+            print("✅ MongoDB connection established")
+        except Exception as e:
+            print(f"⚠️ MongoDB connection failed: {e}")
+            self.mongo_available = False
     
     def _create_indexes(self):
         """Create database indexes for performance"""
-        self.chat_collection.create_index("session_id", unique=True)
-        self.chat_collection.create_index("updated_at")
-        self.doc_registry_collection.create_index("path", unique=True)
+        if self.mongo_available:
+            self.chat_collection.create_index("session_id", unique=True)
+            self.chat_collection.create_index("updated_at")
+            self.doc_registry_collection.create_index("path", unique=True)
     
     def get_or_create_session(self, session_id: str) -> dict:
         """Get an existing session or create a new one"""
+        if not self.mongo_available:
+            # Return a simple dict if MongoDB not available
+            return {"session_id": session_id, "messages": []}
+            
         session = self.chat_collection.find_one({"session_id": session_id})
         if not session:
             session = {
@@ -262,6 +281,12 @@ class DatabaseManager:
     
     def get_chat_history(self, session_id: str) -> List[dict]:
         """Get chat history for a session"""
+        if not self.mongo_available:
+            # Use session state for storage if MongoDB not available
+            if "messages" not in st.session_state:
+                st.session_state.messages = []
+            return st.session_state.messages
+            
         session = self.get_or_create_session(session_id)
         return session.get("messages", [])
     
@@ -269,6 +294,19 @@ class DatabaseManager:
         """Add a pair of user and AI messages to history"""
         timestamp = datetime.utcnow()
         
+        if not self.mongo_available:
+            # Use session state for storage if MongoDB not available
+            if "messages" not in st.session_state:
+                st.session_state.messages = []
+            
+            st.session_state.messages.append({"role": "user", "content": user_message, "timestamp": timestamp})
+            st.session_state.messages.append({"role": "assistant", "content": ai_message, "timestamp": timestamp})
+            
+            # Trim history if needed
+            if len(st.session_state.messages) > Config.MAX_HISTORY_MESSAGES:
+                st.session_state.messages = st.session_state.messages[-Config.MAX_HISTORY_MESSAGES:]
+            return
+            
         # Update the session with new messages
         self.chat_collection.update_one(
             {"session_id": session_id},
@@ -290,6 +328,9 @@ class DatabaseManager:
     
     def _trim_history(self, session_id: str):
         """Ensure history doesn't exceed maximum size"""
+        if not self.mongo_available:
+            return
+            
         session = self.chat_collection.find_one({"session_id": session_id})
         if session and len(session["messages"]) > Config.MAX_HISTORY_MESSAGES:
             # Keep only the most recent messages
@@ -307,12 +348,18 @@ class DatabaseManager:
     
     def cleanup_old_sessions(self, days_threshold: int = 30):
         """Remove chat sessions older than the specified threshold"""
+        if not self.mongo_available:
+            return
+            
         threshold_date = datetime.utcnow() - timedelta(days=days_threshold)
         result = self.chat_collection.delete_many({"updated_at": {"$lt": threshold_date}})
         print(f"Removed {result.deleted_count} old chat sessions")
     
     def get_document_registry(self) -> Dict[str, Any]:
         """Get the document registry from the database"""
+        if not self.mongo_available:
+            return {}
+            
         registry = {}
         for doc in self.doc_registry_collection.find():
             if "_id" in doc:
@@ -322,6 +369,9 @@ class DatabaseManager:
     
     def update_document_registry(self, registry: Dict[str, Any]):
         """Update the document registry in the database"""
+        if not self.mongo_available:
+            return
+            
         # Use upsert to create or update documents
         for doc_hash, info in registry.items():
             self.doc_registry_collection.update_one(
@@ -465,6 +515,10 @@ class ChatServiceAPI:
         self.vector_manager = VectorStoreManager(self.doc_loader)
         self.chat_model = ChatModel(self.vector_manager)
         self.document_service = DocumentService(self.vector_manager)
+        
+        # Create a default session ID if needed
+        if not hasattr(st.session_state, "session_id"):
+            st.session_state.session_id = self.create_new_session()
     
     def create_new_session(self) -> str:
         """Create a new chat session"""
@@ -486,67 +540,66 @@ class ChatServiceAPI:
         return self.document_service.add_new_document(file_path, content)
 
 
-# FastAPI Models
-class ChatRequest(BaseModel):
-    session_id: str
-    question: str
+# Set up Streamlit page config
+st.set_page_config(
+    page_title="Property Finder AI",
+    page_icon="🏠",
+    layout="wide"
+)
 
-class DocumentRequest(BaseModel):
-    file_path: str
-    content: str
-
-class FolderRequest(BaseModel):
-    folder_path: Optional[str] = None
-
-# FastAPI Application Setup
-app = FastAPI(title="Property Finder AI Chat API")
-chat_service = ChatServiceAPI()
-
-
-@app.post("/chat")
-async def chat(request: ChatRequest):
-    """Process a chat message and return a response"""
-    answer = chat_service.handle_chat_request(request.session_id, request.question)
-    return {"answer": answer}
-
-
-@app.get("/new_session")
-async def new_session():
-    """Create a new chat session"""
-    session_id = chat_service.create_new_session()
-    return {"session_id": session_id}
-
-
-@app.post("/load_new_documents")
-async def load_new_documents(request: FolderRequest = None):
-    """Load new documents from a folder"""
-    folder_path = request.folder_path if request and request.folder_path else None
-    result = chat_service.load_new_documents(folder_path)
-    return result
-
-
-@app.post("/add_document")
-async def add_document(request: DocumentRequest):
-    """Add a single document to the vectorstore"""
-    result = chat_service.add_document(request.file_path, request.content)
-    return result
-
-
-@app.post("/upload_document")
-async def upload_document(file: UploadFile = File(...)):
-    """Upload and process a document file"""
-    # Read file content
-    content = await file.read()
-    content_str = content.decode("utf-8")
+def main():
+    """Main Streamlit application"""
+    # Initialize the service
+    if 'chat_service' not in st.session_state:
+        st.session_state.chat_service = ChatServiceAPI()
     
-    # Use the filename as the file_path
-    file_path = file.filename
+    # Initialize chat messages
+    if "streamlit_messages" not in st.session_state:
+        st.session_state.streamlit_messages = []
     
-    # Process the document
-    result = chat_service.add_document(file_path, content_str)
-    return result
+    # Set up the sidebar
+    with st.sidebar:
+        st.image("https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcTSV3sgOOUPmJJIdhigpHfBTYIwRpLh5rdBVA&s",width=100)
+        st.title("Property Finder AI")
+        
+        st.markdown("---")
+        # Add logo to the sidebar
+        
+        
+        if st.button("New Chat"):
+            st.session_state.session_id = st.session_state.chat_service.create_new_session()
+            st.session_state.streamlit_messages = []
+            st.rerun()
+    
+    # Main chat area
+    st.title("Property Finder AI Assistant")
+    
+    
+    
+    # Display chat messages
+    for message in st.session_state.streamlit_messages:
+        with st.chat_message(message["role"]):
+            st.write(message["content"])
+    
+    # Chat input
+    if prompt := st.chat_input("How can I help you?"):
+        # Add user message to chat history
+        st.session_state.streamlit_messages.append({"role": "user", "content": prompt})
+        
+        # Display user message
+        with st.chat_message("user"):
+            st.write(prompt)
+        
+        # Generate and display assistant response
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                response = st.session_state.chat_service.handle_chat_request(
+                    st.session_state.session_id, prompt
+                )
+            st.write(response)
+        
+        # Add assistant response to chat history
+        st.session_state.streamlit_messages.append({"role": "assistant", "content": response})
 
-
-# Entry point
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    main()
