@@ -542,7 +542,7 @@ class ChatServiceAPI:
 
 # Set up Streamlit page config
 st.set_page_config(
-    page_title="Property Finder",
+    page_title="Community Assistant",
     page_icon="🏠",
     layout="wide"
 )
@@ -559,7 +559,6 @@ def main():
     
     # Set up the sidebar
     with st.sidebar:
-        st.image("https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcTSV3sgOOUPmJJIdhigpHfBTYIwRpLh5rdBVA&s",width=100)
         st.title("Property Finder")
         
         st.markdown("---")
